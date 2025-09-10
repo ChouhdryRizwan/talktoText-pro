@@ -1,0 +1,6 @@
+flask
+flask_sqlalchemy
+google-generativeai
+python-docx
+reportlab
+python-dotenv
