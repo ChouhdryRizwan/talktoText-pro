@@ -1,11 +1,10 @@
 import { useState } from "react";
-import axios from "axios";
 
 function Upload() {
   const [file, setFile] = useState(null);
   const [notes, setNotes] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
+  const [currentStep, setCurrentStep] = useState("");
   const [progress, setProgress] = useState(0);
 
   const steps = ["Transcription", "Translation", "Optimization", "Notes Generation"];
@@ -17,57 +16,54 @@ function Upload() {
       return;
     }
 
+    setIsLoading(true);
+    setNotes("");
+    setCurrentStep("");
+    setProgress(0);
+
+    // Prepare file upload
     const formData = new FormData();
     formData.append("file", file);
 
-    try {
-      setIsLoading(true);
-      setNotes("");
-      setCurrentStep(0);
-      setProgress(0);
+    // First, upload file with fetch (not axios because we need SSE after)
+    const res = await fetch(`${API_URL}/api/upload_with_progress`, {
+      method: "POST",
+      body: formData,
+    });
 
-      // Run simulated progress for first 3 steps
-      for (let i = 0; i < steps.length - 1; i++) {
-        await runStep(i);
-      }
-
-      // Last Step = Real API Call
-      await runStep(3, true, formData);
-    } catch (err) {
-      console.error(err);
-      alert("Error uploading file");
-    } finally {
+    if (!res.body) {
+      alert("No response stream from server");
       setIsLoading(false);
+      return;
     }
-  };
 
-  const runStep = (stepIndex, isApiCall = false, formData = null) => {
-    return new Promise(async (resolve) => {
-      setCurrentStep(stepIndex);
-      setProgress(0);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
 
-      let interval = setInterval(() => {
-        setProgress((prev) => {
-          if (prev >= 100) {
-            clearInterval(interval);
-            resolve();
-            return 100;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n\n").filter(Boolean);
+
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          try {
+            const data = JSON.parse(line.replace("data: ", ""));
+            setCurrentStep(data.step);
+            setProgress(data.progress);
+
+            if (data.notes) {
+              setNotes(data.notes);
+              setIsLoading(false);
+            }
+          } catch (e) {
+            console.error("Error parsing SSE data:", e, line);
           }
-          return prev + 5;
-        });
-      }, 100);
-
-      if (isApiCall && formData) {
-        try {
-          const res = await axios.post(`${API_URL}/api/upload`, formData, {
-            headers: { "Content-Type": "multipart/form-data" },
-          });
-          setNotes(res.data.notes);
-        } catch (err) {
-          console.error(err);
         }
       }
-    });
+    }
   };
 
   return (
@@ -85,7 +81,9 @@ function Upload() {
         onClick={handleUpload}
         disabled={isLoading}
         className={`px-4 py-2 rounded-lg text-white ${
-          isLoading ? "bg-gray-500 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"
+          isLoading
+            ? "bg-gray-500 cursor-not-allowed"
+            : "bg-purple-600 hover:bg-purple-700"
         }`}
       >
         {isLoading ? "Processing..." : "Upload & Process"}
@@ -96,20 +94,30 @@ function Upload() {
         <div className="mt-6 space-y-4">
           {steps.map((step, i) => (
             <div key={i}>
-              <p className={`text-sm mb-1 ${i === currentStep ? "text-purple-400 font-bold" : "text-gray-400"}`}>
+              <p
+                className={`text-sm mb-1 ${
+                  step === currentStep
+                    ? "text-purple-400 font-bold"
+                    : "text-gray-400"
+                }`}
+              >
                 {step}
               </p>
               <div className="w-full bg-gray-700 rounded-full h-3">
                 <div
                   className={`h-3 rounded-full ${
-                    i < currentStep ? "bg-green-500" : i === currentStep ? "bg-purple-500" : "bg-gray-600"
+                    step === currentStep
+                      ? "bg-purple-500"
+                      : steps.indexOf(step) < steps.indexOf(currentStep)
+                      ? "bg-green-500"
+                      : "bg-gray-600"
                   }`}
                   style={{
                     width:
-                      i < currentStep
-                        ? "100%"
-                        : i === currentStep
+                      step === currentStep
                         ? `${progress}%`
+                        : steps.indexOf(step) < steps.indexOf(currentStep)
+                        ? "100%"
                         : "0%",
                     transition: "width 0.2s ease-in-out",
                   }}
@@ -123,7 +131,9 @@ function Upload() {
       {/* Notes Display */}
       {notes && !isLoading && (
         <div className="mt-8 p-4 bg-gray-900 rounded-lg shadow-lg">
-          <h3 className="text-xl font-bold text-purple-400 mb-2">Meeting Notes</h3>
+          <h3 className="text-xl font-bold text-purple-400 mb-2">
+            Meeting Notes
+          </h3>
           <pre className="text-gray-300 whitespace-pre-wrap">{notes}</pre>
         </div>
       )}
