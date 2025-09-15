@@ -5,4 +5,6 @@
 # env/
 
 #Ignore env file
-env
+env/
+
+sample/
