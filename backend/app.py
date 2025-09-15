@@ -62,70 +62,105 @@ def process_audio_with_gemini(filepath):
 
     response = model.generate_content(
         [
-            "Transcribe this meeting audio. If not in English, translate to English. "
-            "Then format the output exactly like this:\n\n"
-            "Abstract Summary\n"
-            "<short abstract summary paragraph>\n\n"
-            "Key Points\n"
-            ". Point 1\n"
-            ". Point 2\n"
-            ". Point 3\n\n"
-            "Action Items\n"
-            "1. Action 1\n"
-            "2. Action 2\n\n"
-            "Sentiment\n"
-            "<brief sentiment paragraph>",
+            """
+            You are an AI meeting assistant. 
+            Transcribe and summarize the meeting audio.
+            
+            Important: Return only valid JSON (no explanations, no markdown).
+            
+            JSON format:
+            {
+              "title": "Meeting Audio",
+              "description": "Short description of meeting",
+              "date": "YYYY-MM-DD",
+              "participants": ["Alice", "Bob"],
+              "executiveSummary": "Brief abstract summary",
+              "keyPoints": ["Point 1", "Point 2", "Point 3"],
+              "actionItems": ["Action 1", "Action 2"],
+              "decisions": ["Decision 1", "Decision 2"],
+              "sentiment": "Positive / Negative / Neutral",
+              "sentimentInsights": "Detailed tone analysis"
+            }
+            """,
             {"mime_type": mime_type, "data": audio_bytes},
         ]
     )
-    return response.text
+    text = response.text.strip()
+    if text.startswith("```json") and text.endswith("```"):
+        text = text[7:-3].strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        return {
+            "title": "Meeting Audio",
+            "description": "Auto-generated notes (fallback due to error)",
+            "date": datetime.utcnow().strftime("%Y-%m-%d"),
+            "participants": [],
+            "executiveSummary": text,
+            "keyPoints": [],
+            "actionItems": [],
+            "decisions": [],
+            "sentiment": "Neutral",
+            "sentimentInsights": ""
+        }
 
 # ------------------------
 # Helper: Progress Generator (SSE)
 # ------------------------
 def generate_progress(filepath, filename):
-    steps = ["Transcription", "Translation", "Optimization", "Notes Generation"]
+    steps = ["Uploading", "Transcription", "Translation", "Optimization", "Notes Generation"]
 
-    # Fake progress for first 3 steps
-    for step in steps[:-1]:
+    result_holder = {"notes": None}
+
+    def run_gemini():
+        try:
+            notes = process_audio_with_gemini(filepath)
+        except Exception as e:
+            print(f"Error in Gemini processing: {e}")
+            notes = {
+                "title": "Meeting Audio",
+                "description": "Auto-generated notes (fallback due to error)",
+                "date": datetime.utcnow().strftime("%Y-%m-%d"),
+                "participants": [],
+                "executiveSummary": str(e),
+                "keyPoints": [],
+                "actionItems": [],
+                "decisions": [],
+                "sentiment": "Neutral",
+                "sentimentInsights": ""
+            }
+        result_holder["notes"] = notes
+        with app.app_context():
+            meeting = Meeting(
+                filename=filename,
+                transcript="(Transcript handled by Gemini)",
+                notes=json.dumps(notes)
+            )
+            db.session.add(meeting)
+            db.session.commit()
+
+    import threading
+    thread = threading.Thread(target=run_gemini)
+    thread.start()
+
+    # Simulate progress for each step
+    for step in steps[:-1]:  # Exclude Notes Generation for now
         for p in range(0, 101, 25):
             yield f"data: {json.dumps({'step': step, 'progress': p})}\n\n"
             time.sleep(0.5)
 
-    # ------------------------
-    # Notes Generation step
-    # ------------------------
+    # Notes Generation step with real processing
     step = "Notes Generation"
-
-    # Start fake progress in parallel with Gemini call
-    import threading
-    result_holder = {"notes": None}
-
-    def run_gemini():
-        notes = process_audio_with_gemini(filepath)
-        result_holder["notes"] = notes
-        # Save DB safely inside app context
-        with app.app_context():
-            meeting = Meeting(filename=filename, transcript="(Transcript handled by Gemini)", notes=notes)
-            db.session.add(meeting)
-            db.session.commit()
-
-    thread = threading.Thread(target=run_gemini)
-    thread.start()
-
-    # While Gemini is running, send incremental progress
     for p in range(0, 101, 10):
         yield f"data: {json.dumps({'step': step, 'progress': p})}\n\n"
         time.sleep(1)
-        if result_holder["notes"]:  # Gemini finished early
+        if result_holder["notes"]:
             break
 
-    # Ensure thread finished
     thread.join()
 
-    # Final event with notes
+    # Final event with structured notes
     yield f"data: {json.dumps({'step': step, 'progress': 100, 'notes': result_holder['notes']})}\n\n"
-
 
 # ------------------------
 # Get history
@@ -143,34 +178,24 @@ def history():
         for m in meetings
     ])
 
-
 # ------------------------
 # Stats for dashboard charts
 # ------------------------
 @app.route("/api/stats", methods=["GET"])
 def stats():
     meetings = Meeting.query.all()
-
-    # total uploads
     total_uploads = len(meetings)
-
-    # total words
     total_words = sum(len(m.notes.split()) for m in meetings if m.notes)
-
-    # last 7 days uploads
     today = datetime.utcnow().date()
     last_7_days = [(today - timedelta(days=i)).strftime("%a") for i in range(6, -1, -1)]
-
     uploads_by_day = Counter(m.created_at.date().strftime("%a") for m in meetings)
     uploads_data = [uploads_by_day.get(day, 0) for day in last_7_days]
-
     return jsonify({
         "total_uploads": total_uploads,
         "total_words": total_words,
         "labels": last_7_days,
         "uploads": uploads_data
     })
-
 
 # ------------------------
 # NEW: Upload with live progress (SSE)
@@ -179,15 +204,12 @@ def stats():
 def upload_with_progress():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
-
     file = request.files["file"]
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
-
     filename = secure_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
-
     return Response(generate_progress(filepath, filename), mimetype="text/event-stream")
 
 # ------------------------
@@ -197,21 +219,16 @@ def upload_with_progress():
 def upload():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
-
     file = request.files["file"]
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
-
     filename = secure_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
-
     notes = process_audio_with_gemini(filepath)
-
     meeting = Meeting(filename=filename, transcript="(Transcript handled by Gemini)", notes=notes)
     db.session.add(meeting)
     db.session.commit()
-
     return jsonify({
         "id": meeting.id,
         "filename": meeting.filename,

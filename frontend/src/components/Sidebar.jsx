@@ -47,24 +47,24 @@ export default function Sidebar() {
             onClick={() => setIsCollapsed(!isCollapsed)}
             className="p-2 rounded-md hover:bg-gray-800"
           >
-            {isCollapsed ? <Menu className="h-5 w-5" /> : <X className="h-5 w-5" />}
+            {isCollapsed ? <Menu className="h-10 w-5" /> : <X className="h-5 w-5" />}
           </button>
         </div>
 
         {/* Nav Links */}
         <nav className="space-y-2 mt-4">
           <NavLink to="/" className={linkClasses} onClick={() => setIsOpenMobile(false)}>
-            <LayoutDashboard className="h-5 w-5" />
+            <LayoutDashboard className="h-10 w-5" />
             {!isCollapsed && <span className="ml-3">Dashboard</span>}
           </NavLink>
 
           <NavLink to="/upload" className={linkClasses} onClick={() => setIsOpenMobile(false)}>
-            <Upload className="h-5 w-5" />
+            <Upload className="h-10 w-5" />
             {!isCollapsed && <span className="ml-3">Upload</span>}
           </NavLink>
 
           <NavLink to="/history" className={linkClasses} onClick={() => setIsOpenMobile(false)}>
-            <History className="h-5 w-5" />
+            <History className="h-10 w-5" />
             {!isCollapsed && <span className="ml-3">History</span>}
           </NavLink>
         </nav>
